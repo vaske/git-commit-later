@@ -16,7 +16,11 @@ import (
 	sched "github.com/milan/git-commit-later/internal/schedule"
 )
 
-const version = "0.1.0"
+var version = "dev"
+
+func versionLine() string {
+	return "git-commit-later " + version
+}
 
 func main() {
 	if len(os.Args) > 1 {
@@ -28,7 +32,7 @@ func main() {
 		case "run":
 			must(runJob(os.Args[2:]))
 		case "version", "--version", "-v":
-			fmt.Println("git-commit-later", version)
+			fmt.Println(versionLine())
 		case "help", "--help", "-h":
 			usage()
 		default:

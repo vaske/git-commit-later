@@ -11,17 +11,36 @@ git commit-later "docs: publish tomorrow" --at "2026-08-25 09:00"
 
 ## Install
 
-### Go
+Git exposes the binary as `git commit-later` once `git-commit-later` is on your `PATH`.
+
+### Homebrew
+
+```bash
+brew tap vaske/git-commit-later https://github.com/vaske/git-commit-later.git
+brew install --cask git-commit-later
+```
+
+### Install script
+
+No Go required. Downloads the latest GitHub Release for your OS/architecture:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vaske/git-commit-later/master/install.sh | sh
+```
+
+Installs to `/usr/local/bin` if writable, otherwise `~/.local/bin`. Override with `PREFIX=/path/to/bin`. Pin a version with `VERSION=v0.1.0`.
+
+### From a release binary
+
+Download the archive for your OS/architecture from [GitHub Releases](https://github.com/vaske/git-commit-later/releases), extract `git-commit-later`, and place it somewhere on your `PATH`.
+
+### From source (Go)
 
 ```bash
 go install github.com/milan/git-commit-later@latest
 ```
 
-Make sure `$(go env GOPATH)/bin` is on your `PATH`. Because the executable is named `git-commit-later`, Git automatically exposes it as `git commit-later`.
-
-### From a release binary
-
-Download the archive for your OS/architecture from GitHub Releases, extract `git-commit-later`, and place it somewhere on your `PATH`.
+Make sure `$(go env GOPATH)/bin` is on your `PATH`.
 
 ## Usage
 
@@ -98,6 +117,15 @@ Then:
 
 ```bash
 git commit-later --help
+```
+
+## Releasing
+
+Push a version tag. GitHub Actions runs tests, then GoReleaser publishes binaries, checksums, and the Homebrew cask:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
 ## License

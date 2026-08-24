@@ -14,9 +14,13 @@ builds:
     goarch:
       - amd64
       - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
 
 archives:
-  - formats: [tar.gz]
+  - id: git-commit-later
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
         formats: [zip]
@@ -26,3 +30,29 @@ checksum:
 
 changelog:
   sort: asc
+
+release:
+  github:
+    owner: vaske
+    name: git-commit-later
+
+homebrew_casks:
+  - name: git-commit-later
+    ids:
+      - git-commit-later
+    homepage: https://github.com/vaske/git-commit-later
+    description: Schedule a staged Git commit for later
+    license: MIT
+    directory: Casks
+    skip_upload: auto
+    repository:
+      owner: vaske
+      name: git-commit-later
+    binaries:
+      - git-commit-later
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/git-commit-later"]
+          end
