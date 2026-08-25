@@ -13,6 +13,10 @@ type Snapshot struct {
 	Repo, GitDir, Branch, HEAD, Tree, AuthorName, AuthorEmail string
 }
 
+type Info struct {
+	Repo, GitDir string
+}
+
 func git(repo string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	if repo != "" {
@@ -30,44 +34,52 @@ func git(repo string, args ...string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-func Capture() (Snapshot, error) {
+func Current() (Info, error) {
 	root, err := git("", "rev-parse", "--show-toplevel")
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("not inside a Git repository: %w", err)
+		return Info{}, fmt.Errorf("not inside a Git repository: %w", err)
 	}
 	root, _ = filepath.Abs(root)
 	gd, err := git(root, "rev-parse", "--absolute-git-dir")
 	if err != nil {
+		return Info{}, err
+	}
+	return Info{Repo: root, GitDir: gd}, nil
+}
+
+func Capture() (Snapshot, error) {
+	info, err := Current()
+	if err != nil {
 		return Snapshot{}, err
 	}
-	branch, err := git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
+	branch, err := git(info.Repo, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("detached HEAD is not supported in v0.1")
 	}
-	head, err := git(root, "rev-parse", "HEAD")
+	head, err := git(info.Repo, "rev-parse", "HEAD")
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("repository must have at least one commit: %w", err)
 	}
-	tree, err := git(root, "write-tree")
+	tree, err := git(info.Repo, "write-tree")
 	if err != nil {
 		return Snapshot{}, err
 	}
-	diff, err := git(root, "diff", "--cached", "--quiet")
+	diff, err := git(info.Repo, "diff", "--cached", "--quiet")
 	if err == nil && diff == "" {
 		return Snapshot{}, fmt.Errorf("nothing staged; stage files first with git add")
 	}
 	// git diff --quiet exits 1 when there are changes; our helper turns that into an error.
 	// Verify the tree actually differs from HEAD instead.
-	headTree, err := git(root, "rev-parse", "HEAD^{tree}")
+	headTree, err := git(info.Repo, "rev-parse", "HEAD^{tree}")
 	if err != nil {
 		return Snapshot{}, err
 	}
 	if tree == headTree {
 		return Snapshot{}, fmt.Errorf("nothing staged; stage files first with git add")
 	}
-	name, _ := git(root, "config", "user.name")
-	email, _ := git(root, "config", "user.email")
-	return Snapshot{root, gd, branch, head, tree, name, email}, nil
+	name, _ := git(info.Repo, "config", "user.name")
+	email, _ := git(info.Repo, "config", "user.email")
+	return Snapshot{info.Repo, info.GitDir, branch, head, tree, name, email}, nil
 }
 
 func CreateCommitAndAdvance(repo, branch, baseHEAD, tree, message, authorName, authorEmail string) (string, error) {

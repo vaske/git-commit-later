@@ -5,6 +5,7 @@ Schedule a staged Git commit for later.
 ```bash
 git commit-later "feat: ship this later" --in 2h
 git commit-later "docs: publish tomorrow" --at "2026-08-25 09:00"
+git commit-later "chore: opportunistic" --in 2h --no-worker
 ```
 
 `git-commit-later` captures the staged Git tree when you schedule the job. At execution time it creates a commit from that snapshot and advances the original branch only if the branch still points to the same commit it did when the job was scheduled.
@@ -62,6 +63,12 @@ Or use a local date/time:
 git commit-later "feat: payment flow" --at "2026-08-25 09:00"
 ```
 
+Schedule without starting a detached worker:
+
+```bash
+git commit-later "feat: payment flow" --in 2h --no-worker
+```
+
 Inspect jobs:
 
 ```bash
@@ -79,6 +86,29 @@ Run a due job manually:
 ```bash
 git commit-later run 78b13ca2
 ```
+
+Run all due jobs:
+
+```bash
+git commit-later run-due
+```
+
+## Optional Git hooks
+
+You can install lightweight repository hooks for daemonless, opportunistic
+execution:
+
+```bash
+git commit-later install-hooks
+git commit-later "feat: payment flow" --in 2h --no-worker
+```
+
+The installed hooks call `git commit-later run-due --repo <this-repo> --quiet`
+from `post-checkout` and `pre-push`. This does not provide exact wall-clock
+scheduling. Instead, due jobs run the next time one of those Git hooks fires.
+
+This mode is useful when you want no local worker process. For exact execution
+at the scheduled time, use the default worker mode or a persistent OS scheduler.
 
 ## Safety model
 
@@ -99,6 +129,9 @@ This means the MVP favors safety over automatic rebasing.
 ## Current MVP limitation
 
 The scheduler uses a detached local worker process. Closing your terminal is fine, but a machine reboot or shutdown before the scheduled time can prevent the job from running. Persistent OS schedulers (launchd/systemd/Task Scheduler) are a planned improvement.
+
+The optional hook mode avoids the detached worker, but it only runs due commits
+when later Git activity triggers an installed hook.
 
 ## Development
 

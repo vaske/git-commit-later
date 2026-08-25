@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,10 @@ func main() {
 			must(cancelJob(os.Args[2:]))
 		case "run":
 			must(runJob(os.Args[2:]))
+		case "run-due":
+			must(runDueJobs(os.Args[2:]))
+		case "install-hooks":
+			must(installHooks(os.Args[2:]))
 		case "version", "--version", "-v":
 			fmt.Println(versionLine())
 		case "help", "--help", "-h":
@@ -52,6 +57,8 @@ Usage:
   git commit-later list
   git commit-later cancel <job-id>
   git commit-later run <job-id> [--wait]
+  git commit-later run-due [--repo <path>] [--quiet]
+  git commit-later install-hooks
 
 The scheduled commit captures the staged index now. The commit only runs if
 that branch still points to the same HEAD at execution time.
@@ -64,6 +71,7 @@ func scheduleJob(args []string) error {
 	fs := flag.NewFlagSet("schedule", flag.ContinueOnError)
 	at := fs.String("at", "", "absolute/local time")
 	in := fs.String("in", "", "duration from now, e.g. 2h or 30m")
+	noWorker := fs.Bool("no-worker", false, "save job without starting a detached worker")
 	// Accept flags after message by manually splitting message from options.
 	message := ""
 	var flagArgs []string
@@ -95,8 +103,10 @@ func scheduleJob(args []string) error {
 	if err := jobs.Save(j); err != nil {
 		return err
 	}
-	if err := startWorker(j.ID); err != nil {
-		return fmt.Errorf("job saved as %s but worker could not start: %w", j.ID, err)
+	if !*noWorker {
+		if err := startWorker(j.ID); err != nil {
+			return fmt.Errorf("job saved as %s but worker could not start: %w", j.ID, err)
+		}
 	}
 	fmt.Printf("Scheduled %s on %s for %s (job %s)\n", short(snap.Tree), snap.Branch, when.Format(time.RFC1123), j.ID)
 	return nil
@@ -167,19 +177,81 @@ func runJob(args []string) error {
 	if !*wait && time.Now().Before(j.ScheduledAt) {
 		return fmt.Errorf("job is not due until %s", j.ScheduledAt.Format(time.RFC3339))
 	}
+	_, err = executeJob(j)
+	return err
+}
+
+func runDueJobs(args []string) error {
+	fs := flag.NewFlagSet("run-due", flag.ContinueOnError)
+	repo := fs.String("repo", "", "only run due jobs for this repository")
+	quiet := fs.Bool("quiet", false, "suppress output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	repoFilter := ""
+	if *repo != "" {
+		abs, err := filepath.Abs(*repo)
+		if err != nil {
+			return err
+		}
+		repoFilter = filepath.Clean(abs)
+	}
+	js, err := jobs.List()
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	ran := 0
+	var errs []string
+	for _, j := range js {
+		if j.Status != jobs.Pending || now.Before(j.ScheduledAt) {
+			continue
+		}
+		if repoFilter != "" && filepath.Clean(j.Repo) != repoFilter {
+			continue
+		}
+		ran++
+		commit, err := executeJob(j)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", j.ID, err))
+			if !*quiet {
+				fmt.Fprintf(os.Stderr, "Failed %s: %v\n", j.ID, err)
+			}
+			continue
+		}
+		if !*quiet {
+			fmt.Printf("Committed %s as %s\n", j.ID, short(commit))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf(strings.Join(errs, "; "))
+	}
+	if ran == 0 && !*quiet {
+		fmt.Println("No due scheduled commits.")
+	}
+	return nil
+}
+
+func executeJob(j jobs.Job) (string, error) {
+	if j.Status != jobs.Pending {
+		return "", nil
+	}
+	if time.Now().Before(j.ScheduledAt) {
+		return "", fmt.Errorf("job is not due until %s", j.ScheduledAt.Format(time.RFC3339))
+	}
 	commit, err := gitrepo.CreateCommitAndAdvance(j.Repo, j.Branch, j.BaseHEAD, j.Tree, j.Message, j.AuthorName, j.AuthorEmail)
 	if err != nil {
 		j.Status = jobs.Failed
 		j.Error = err.Error()
 		_ = jobs.Save(j)
-		return err
+		return "", err
 	}
 	j.Status = jobs.Completed
 	j.Commit = commit
 	if err := jobs.Save(j); err != nil {
-		return err
+		return "", err
 	}
-	return nil
+	return commit, nil
 }
 
 func startWorker(jobID string) error {
@@ -203,6 +275,70 @@ func startWorker(jobID string) error {
 		_ = cmd.Process.Release()
 	}
 	return nil
+}
+
+func installHooks(args []string) error {
+	fs := flag.NewFlagSet("install-hooks", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	info, err := gitrepo.Current()
+	if err != nil {
+		return err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	hooksDir := filepath.Join(info.GitDir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		return err
+	}
+	hookNames := []string{"post-checkout", "pre-push"}
+	for _, name := range hookNames {
+		if err := installHook(filepath.Join(hooksDir, name), exe); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("Installed git-commit-later hooks in %s\n", info.Repo)
+	return nil
+}
+
+func installHook(path, exe string) error {
+	const begin = "# BEGIN git-commit-later"
+	const end = "# END git-commit-later"
+	block := begin + "\n" +
+		"if [ \"${GIT_COMMIT_LATER_HOOK:-}\" != \"1\" ]; then\n" +
+		"  repo=$(git rev-parse --show-toplevel 2>/dev/null) || repo=\"\"\n" +
+		"  if [ -n \"$repo\" ]; then\n" +
+		"    GIT_COMMIT_LATER_HOOK=1 " + shellQuote(exe) + " run-due --repo \"$repo\" --quiet >/dev/null 2>&1 || true\n" +
+		"  fi\n" +
+		"fi\n" +
+		end + "\n"
+
+	b, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	content := string(b)
+	if content == "" {
+		content = "#!/bin/sh\n\n" + block
+	} else if strings.Contains(content, begin) && strings.Contains(content, end) {
+		start := strings.Index(content, begin)
+		stop := strings.Index(content[start:], end)
+		stop += start + len(end)
+		content = strings.TrimRight(content[:start], "\n") + "\n\n" + strings.TrimRight(block, "\n") + content[stop:]
+	} else {
+		content = strings.TrimRight(content, "\n") + "\n\n" + block
+	}
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o755)
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func short(s string) string {
